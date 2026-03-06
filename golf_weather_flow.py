@@ -15,12 +15,16 @@ from email.mime.text import MIMEText
 import httpx
 from datetime import date
 from prefect import flow, task, get_run_logger
+from prefect.variables import Variable
 
 # ──────────────────────────────────────────────
 #  CONFIG — set these as environment variables
 # ──────────────────────────────────────────────
+
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "kbronander@gmail.com")
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]  # 16-char app password
+
+# Load from Prefect Variable instead of raw env var
+GMAIL_APP_PASSWORD = Variable.get("GMAIL_APP_PASSWORD")
 
 # Recipients: comma-separated email-to-SMS addresses
 # Carrier gateways:
