@@ -213,7 +213,7 @@ def send_sms_via_email(messages: list[str]):
                     logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
 
                     if i < len(messages):
-                        time.sleep(4)
+                        time.sleep(10)
         except Exception as e:
             logger.error(f"Failed sending to {recipient}: {e}")
             raise
