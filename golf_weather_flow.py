@@ -208,15 +208,21 @@ def send_sms_via_email(messages: list[str]):
             msg["Subject"] = ""
 
             try:
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                    server.login(GMAIL_ADDRESS, gmail_app_password)
-                    server.send_message(msg)
-                logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
-                if i < len(messages):
-                  time.sleep(4)
-            except Exception as e:
-                logger.error(f"Failed SMS {i} to {recipient}: {e}")
-                raise
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(GMAIL_ADDRESS, gmail_app_password)
+        for i, body in enumerate(messages, 1):
+            msg = MIMEText(body)
+            msg["From"] = GMAIL_ADDRESS
+            msg["To"] = recipient
+            msg["Subject"] = f"({i}/{len(messages)})"
+
+            server.send_message(msg)
+            logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
+            if i < len(messages):
+                time.sleep(4)
+except Exception as e:
+    logger.error(f"Failed sending to {recipient}: {e}")
+    raise
 
 
 @flow(name="golf-weather-sms", log_prints=True)
