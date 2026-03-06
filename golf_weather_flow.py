@@ -152,43 +152,47 @@ def pick_highlights(days: list[dict]) -> dict:
     }
 
 
+# Replace format_message, send_sms_via_email, and golf_weather_sms with:
+
 @task
-def format_message(highlights: dict) -> str:
-    """Build a concise SMS-friendly message."""
-    lines = ["Golf Weather - Monmouth Co."]
+def format_messages(highlights: dict) -> list[str]:
+    """Build SMS-sized messages (each ≤160 chars)."""
+    msgs = []
 
     bw = highlights["best_weekend"]
     if bw:
-        tag = "Rough weekend" if bw["score"] == 1 else f"Score: {bw['score']}/5"
-        lines.append(
-            f"\nBest Weekend: {bw['date_str']}\n"
+        tag = "Rough wknd" if bw["score"] == 1 else f"{bw['score']}/5"
+        msgs.append(
+            f"Golf Monmouth Co\n"
+            f"Best Wknd: {bw['date_str']}\n"
             f"{bw['high']}F/{bw['low']}F {bw['emoji']} "
-            f"Rain: {bw['rain']}% | {tag}"
+            f"Rain:{bw['rain']}% | {tag}"
         )
 
     bd = highlights["best_weekday"]
     if bd:
-        lines.append(
-            f"\nBest Weekday: {bd['date_str']}\n"
+        msgs.append(
+            f"Best Wkday: {bd['date_str']}\n"
             f"{bd['high']}F/{bd['low']}F {bd['emoji']} "
-            f"Rain: {bd['rain']}% | Score: {bd['score']}/5"
+            f"Rain:{bd['rain']}% | {bd['score']}/5"
         )
 
     d16 = highlights["day_16"]
     if d16:
-        lines.append(
-            f"\n16-Day Out: {d16['date_str']}\n"
+        msgs.append(
+            f"16-Day: {d16['date_str']}\n"
             f"{d16['high']}F/{d16['low']}F {d16['emoji']} "
-            f"Rain: {d16['rain']}% | Score: {d16['score']}/5"
+            f"Rain:{d16['rain']}% | {d16['score']}/5\n"
+            f"{SITE_URL}"
         )
 
-    lines.append(f"\nFull forecast: {SITE_URL}")
-    return "\n".join(lines)
+    # Safety check — truncate any message over 160
+    return [m[:160] for m in msgs]
 
 
 @task(retries=2, retry_delay_seconds=15)
-def send_sms_via_email(message: str):
-    """Send SMS to all recipients via email-to-SMS carrier gateways."""
+def send_sms_via_email(messages: list[str]):
+    """Send each SMS message to all recipients via email-to-SMS."""
     logger = get_run_logger()
 
     for recipient in RECIPIENTS:
@@ -196,38 +200,36 @@ def send_sms_via_email(message: str):
         if not recipient:
             continue
 
-        msg = MIMEText(message)
-        msg["From"] = GMAIL_ADDRESS
-        msg["To"] = recipient
-        msg["Subject"] = ""  # keep empty — subject shows as separate line on some carriers
+        for i, body in enumerate(messages, 1):
+            msg = MIMEText(body)
+            msg["From"] = GMAIL_ADDRESS
+            msg["To"] = recipient
+            msg["Subject"] = ""
 
-        try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(GMAIL_ADDRESS, gmail_app_password)
-                server.send_message(msg)
-            logger.info(f"SMS sent to {recipient}")
-        except Exception as e:
-            logger.error(f"Failed to send to {recipient}: {e}")
-            raise
+            try:
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                    server.login(GMAIL_ADDRESS, gmail_app_password)
+                    server.send_message(msg)
+                logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
+            except Exception as e:
+                logger.error(f"Failed SMS {i} to {recipient}: {e}")
+                raise
 
 
-# ──────────────────────────────────────────────
-#  MAIN FLOW
-# ──────────────────────────────────────────────
 @flow(name="golf-weather-sms", log_prints=True)
 def golf_weather_sms():
     """Daily golf weather report for Monmouth County, NJ."""
     raw = fetch_weather()
     days = process_forecast(raw)
     highlights = pick_highlights(days)
-    message = format_message(highlights)
+    messages = format_messages(highlights)
 
-    print(f"\n{'='*40}")
-    print(message)
-    print(f"{'='*40}\n")
+    for i, m in enumerate(messages, 1):
+        print(f"\n--- SMS {i} ({len(m)} chars) ---")
+        print(m)
 
-    send_sms_via_email(message)
-    print(f"Sent to {len([r for r in RECIPIENTS if r.strip()])} recipient(s)")
+    send_sms_via_email(messages)
+    print(f"\nSent {len(messages)} msg(s) to {len([r for r in RECIPIENTS if r.strip()])} recipient(s)")
 
 
 # ──────────────────────────────────────────────
