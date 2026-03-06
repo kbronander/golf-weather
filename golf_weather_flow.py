@@ -24,7 +24,7 @@ from prefect.variables import Variable
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "kbronander@gmail.com")
 
 # Load from Prefect Variable instead of raw env var
-GMAIL_APP_PASSWORD = Variable.get("GMAIL_APP_PASSWORD")
+gmail_app_password = Variable.get("gmail_app_password")
 
 # Recipients: comma-separated email-to-SMS addresses
 # Carrier gateways:
