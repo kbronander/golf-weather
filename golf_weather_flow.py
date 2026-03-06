@@ -153,8 +153,6 @@ def pick_highlights(days: list[dict]) -> dict:
     }
 
 
-# Replace format_message, send_sms_via_email, and golf_weather_sms with:
-
 @task
 def format_messages(highlights: dict) -> list[str]:
     """Build SMS-sized messages (each ≤160 chars)."""
@@ -201,31 +199,24 @@ def send_sms_via_email(messages: list[str]):
         if not recipient:
             continue
 
-        for i, body in enumerate(messages, 1):
-            msg = MIMEText(body)
-            msg["From"] = GMAIL_ADDRESS
-            msg["To"] = recipient
-            msg["Subject"] = ""
-
-            try:
-              with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(GMAIL_ADDRESS, gmail_app_password)
-                  
-                for i, body in enumerate(messages, 1):
-                  msg = MIMEText(body)
-                  msg["From"] = GMAIL_ADDRESS
-                  msg["To"] = recipient
-                  msg["Subject"] = f"({i}/{len(messages)})"
 
-                  server.send_message(msg)
-                  logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
-            
-                  if i < len(messages):
-                    time.sleep(4)
-                    
-  except Exception as e:
-    logger.error(f"Failed sending to {recipient}: {e}")
-    raise
+                for i, body in enumerate(messages, 1):
+                    msg = MIMEText(body)
+                    msg["From"] = GMAIL_ADDRESS
+                    msg["To"] = recipient
+                    msg["Subject"] = f"({i}/{len(messages)})"
+
+                    server.send_message(msg)
+                    logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
+
+                    if i < len(messages):
+                        time.sleep(4)
+        except Exception as e:
+            logger.error(f"Failed sending to {recipient}: {e}")
+            raise
 
 
 @flow(name="golf-weather-sms", log_prints=True)
