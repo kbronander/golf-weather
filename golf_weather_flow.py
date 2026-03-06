@@ -203,7 +203,7 @@ def send_sms_via_email(message: str):
 
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(GMAIL_ADDRESS, gmail_app-password)
+                server.login(GMAIL_ADDRESS, gmail_app_password)
                 server.send_message(msg)
             logger.info(f"SMS sent to {recipient}")
         except Exception as e:
