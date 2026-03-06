@@ -1,36 +1,41 @@
 """
 Monmouth County Golf Weather — Prefect Flow
 Runs daily at 5am ET. Fetches 16-day forecast, scores each day for golf,
-sends SMS summary via Twilio, and optionally generates AI commentary via Anthropic.
+sends SMS via email-to-SMS gateway (no Twilio needed).
 
 Setup:
-  1. pip install prefect twilio httpx anthropic
+  1. pip install prefect httpx
   2. Set environment variables (see below)
-  3. prefect deploy --name golf-weather-sms
+  3. python golf_weather_flow.py
 """
 
 import os
-import json
+import smtplib
+from email.mime.text import MIMEText
 import httpx
-from datetime import date, timedelta, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
 from prefect import flow, task, get_run_logger
-from twilio.rest import Client as TwilioClient
 
 # ──────────────────────────────────────────────
 #  CONFIG — set these as environment variables
-#  or Prefect Variables / Blocks
 # ──────────────────────────────────────────────
-TWILIO_SID = os.environ["TWILIO_ACCOUNT_SID"]       # ACxxxxxxxx
-TWILIO_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]       # your auth token
-TWILIO_FROM = os.environ["TWILIO_FROM_NUMBER"]       # +18776405061
-RECIPIENTS = os.environ.get("GOLF_RECIPIENTS", "").split(",")  # comma-separated +1XXXXXXXXXX
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "kbronander@gmail.com")
+GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]  # 16-char app password
 
-# Optional: set ANTHROPIC_API_KEY to enable AI-generated commentary
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Recipients: comma-separated email-to-SMS addresses
+# Carrier gateways:
+#   Verizon:  number@vtext.com
+#   AT&T:     number@txt.att.net
+#   T-Mobile: number@tmomail.net
+#   Sprint:   number@messaging.sprintpcs.com
+RECIPIENTS = os.environ.get(
+    "GOLF_RECIPIENTS",
+    "9085778614@vtext.com"
+).split(",")
+
 SITE_URL = os.environ.get("GOLF_SITE_URL", "https://kbronander.github.io/kbronander/")
 
-# Monmouth County, NJ coordinates
+# Monmouth County, NJ
 LAT, LON = 40.25, -74.15
 
 # WMO weather code to emoji + label
@@ -62,9 +67,9 @@ def golf_score(high, low, rain_prob, humidity, code):
         return 1
     if high < 50 or high > 85:
         return 2
-    if high >= 65 and high <= 75 and rain_prob <= 15 and humidity <= 55 and code in (0, 1):
+    if 65 <= high <= 75 and rain_prob <= 15 and humidity <= 55 and code in (0, 1):
         return 5
-    if high >= 60 and high <= 80 and rain_prob <= 25 and humidity <= 65 and code in (0, 1, 2):
+    if 60 <= high <= 80 and rain_prob <= 25 and humidity <= 65 and code in (0, 1, 2):
         return 4
     if rain_prob <= 40 and 50 <= high <= 85:
         return 3
@@ -79,7 +84,7 @@ SCORE_LABELS = {1: "Skip it", 2: "Tough", 3: "Playable", 4: "Great", 5: "Perfect
 # ──────────────────────────────────────────────
 @task(retries=2, retry_delay_seconds=30)
 def fetch_weather() -> dict:
-    """Fetch 16-day forecast from Open-Meteo (free, no key)."""
+    """Fetch 16-day forecast from Open-Meteo (free, no API key)."""
     logger = get_run_logger()
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
@@ -144,32 +149,32 @@ def pick_highlights(days: list[dict]) -> dict:
 
 
 @task
-def format_sms(highlights: dict) -> str:
-    """Build a concise SMS message (< 320 chars target)."""
-    lines = ["⛳ Golf Weather - Monmouth Co."]
+def format_message(highlights: dict) -> str:
+    """Build a concise SMS-friendly message."""
+    lines = ["Golf Weather - Monmouth Co."]
 
     bw = highlights["best_weekend"]
     if bw:
-        tag = "⚠️ Rough weekend" if bw["score"] == 1 else f"Score: {bw['score']}/5"
+        tag = "Rough weekend" if bw["score"] == 1 else f"Score: {bw['score']}/5"
         lines.append(
-            f"\n🏆 Best Weekend: {bw['date_str']}\n"
-            f"{bw['high']}°/{bw['low']}° {bw['emoji']} "
+            f"\nBest Weekend: {bw['date_str']}\n"
+            f"{bw['high']}F/{bw['low']}F {bw['emoji']} "
             f"Rain: {bw['rain']}% | {tag}"
         )
 
     bd = highlights["best_weekday"]
     if bd:
         lines.append(
-            f"\n📅 Best Weekday: {bd['date_str']}\n"
-            f"{bd['high']}°/{bd['low']}° {bd['emoji']} "
+            f"\nBest Weekday: {bd['date_str']}\n"
+            f"{bd['high']}F/{bd['low']}F {bd['emoji']} "
             f"Rain: {bd['rain']}% | Score: {bd['score']}/5"
         )
 
     d16 = highlights["day_16"]
     if d16:
         lines.append(
-            f"\n🔭 16-Day Out: {d16['date_str']}\n"
-            f"{d16['high']}°/{d16['low']}° {d16['emoji']} "
+            f"\n16-Day Out: {d16['date_str']}\n"
+            f"{d16['high']}F/{d16['low']}F {d16['emoji']} "
             f"Rain: {d16['rain']}% | Score: {d16['score']}/5"
         )
 
@@ -177,54 +182,29 @@ def format_sms(highlights: dict) -> str:
     return "\n".join(lines)
 
 
-@task(retries=1, retry_delay_seconds=10)
-def maybe_add_ai_commentary(highlights: dict, base_msg: str) -> str:
-    """Optionally call Anthropic to add a one-liner golf tip. Skip if no key."""
-    if not ANTHROPIC_API_KEY:
-        return base_msg
-
-    logger = get_run_logger()
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-        bw = highlights.get("best_weekend", {})
-        bd = highlights.get("best_weekday", {})
-        prompt = (
-            f"You're a golf buddy sending a group text. Based on this weather, "
-            f"write ONE short sentence (under 60 chars) with a fun recommendation. "
-            f"Best weekend: {bw.get('date_str','N/A')} {bw.get('high','?')}° {bw.get('label','?')} score {bw.get('score','?')}/5. "
-            f"Best weekday: {bd.get('date_str','N/A')} {bd.get('high','?')}° {bd.get('label','?')} score {bd.get('score','?')}/5."
-        )
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=80,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        tip = resp.content[0].text.strip()
-        logger.info(f"AI tip: {tip}")
-        return base_msg + f"\n\n💬 {tip}"
-    except Exception as e:
-        logger.warning(f"AI commentary skipped: {e}")
-        return base_msg
-
-
 @task(retries=2, retry_delay_seconds=15)
-def send_sms(message: str):
-    """Send the SMS to all recipients via Twilio."""
+def send_sms_via_email(message: str):
+    """Send SMS to all recipients via email-to-SMS carrier gateways."""
     logger = get_run_logger()
-    client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
-    for number in RECIPIENTS:
-        number = number.strip()
-        if not number:
+    for recipient in RECIPIENTS:
+        recipient = recipient.strip()
+        if not recipient:
             continue
-        msg = client.messages.create(
-            body=message,
-            from_=TWILIO_FROM,
-            to=number,
-        )
-        logger.info(f"SMS sent to {number} — SID: {msg.sid}")
+
+        msg = MIMEText(message)
+        msg["From"] = GMAIL_ADDRESS
+        msg["To"] = recipient
+        msg["Subject"] = ""  # keep empty — subject shows as separate line on some carriers
+
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+                server.send_message(msg)
+            logger.info(f"SMS sent to {recipient}")
+        except Exception as e:
+            logger.error(f"Failed to send to {recipient}: {e}")
+            raise
 
 
 # ──────────────────────────────────────────────
@@ -236,25 +216,24 @@ def golf_weather_sms():
     raw = fetch_weather()
     days = process_forecast(raw)
     highlights = pick_highlights(days)
-    message = format_sms(highlights)
-    message = maybe_add_ai_commentary(highlights, message)
+    message = format_message(highlights)
 
     print(f"\n{'='*40}")
     print(message)
     print(f"{'='*40}\n")
 
-    send_sms(message)
-    print(f"✅ Sent to {len([r for r in RECIPIENTS if r.strip()])} recipient(s)")
+    send_sms_via_email(message)
+    print(f"Sent to {len([r for r in RECIPIENTS if r.strip()])} recipient(s)")
 
 
 # ──────────────────────────────────────────────
-#  DEPLOYMENT — run once to register with Prefect Cloud
+#  DEPLOYMENT
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
-    # Option A: Just run the flow locally right now
+    # To test once: uncomment the next line, comment out .serve()
     # golf_weather_sms()
 
-    # Option B: Deploy to Prefect Cloud with a daily 5am ET schedule
+    # To deploy with daily 5am ET schedule:
     golf_weather_sms.serve(
         name="golf-weather-daily",
         cron="0 5 * * *",
