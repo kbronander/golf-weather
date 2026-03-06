@@ -11,6 +11,7 @@ Setup:
 
 import os
 import smtplib
+import time
 from email.mime.text import MIMEText
 import httpx
 from datetime import date
@@ -211,6 +212,8 @@ def send_sms_via_email(messages: list[str]):
                     server.login(GMAIL_ADDRESS, gmail_app_password)
                     server.send_message(msg)
                 logger.info(f"SMS {i}/{len(messages)} sent to {recipient}")
+                if i < len(messages):
+                  time.sleep(4)
             except Exception as e:
                 logger.error(f"Failed SMS {i} to {recipient}: {e}")
                 raise
